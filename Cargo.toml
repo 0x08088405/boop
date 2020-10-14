@@ -1,6 +1,6 @@
 [package]
 name = "boop"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["viri <hi@viri.moe>"]
 edition = "2018"
 description = "Comfortable low-level audio library."

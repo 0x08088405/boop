@@ -14,3 +14,4 @@ license = "Zlib"
 include = ["src/**/*.rs", "Cargo.toml"]
 
 [dependencies]
+cpal = "0.12"

@@ -22,8 +22,8 @@ pub enum Error {
     StreamIdOverflow,
 }
 
-// Currently sets up an output stream and plays 0.5 seconds of silence to it
-pub fn silence() -> Result<(), Error> {
+// Currently sets up an output stream and plays 0.5 seconds of 440Hz beep
+pub fn sinewave() -> Result<(), Error> {
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
     let host = cpal::default_host();
@@ -48,12 +48,62 @@ pub fn silence() -> Result<(), Error> {
     }
     .with_max_sample_rate();
 
+    let sample_rate = supported_config.sample_rate().0;
+    let channel_count: u16 = supported_config.channels();
+    let hz = 440.0;
+
+    let mut i: usize = 0;
+    let write_sine_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let mut channel = 0;
+        for sample in data.iter_mut() {
+            let f = ((i as f32) * hz * 2.0 * std::f32::consts::PI / (sample_rate as f32)).sin();
+            *sample = Sample::from(&f);
+            channel += 1;
+            if channel == channel_count {
+                i = i.wrapping_add(1);
+                channel = 0;
+            }
+        }
+    };
+
+    let write_sine_i16 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+        let mut channel = 0;
+        for sample in data.iter_mut() {
+            let f = ((i as f64) * f64::from(hz) * 2.0 * std::f64::consts::PI
+                / (sample_rate as f64))
+                .sin();
+            let s = (f * f64::from(std::i16::MAX)) as i16;
+            *sample = Sample::from(&s);
+            channel += 1;
+            if channel == channel_count {
+                i = i.wrapping_add(1);
+                channel = 0;
+            }
+        }
+    };
+
+    let write_sine_u16 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+        let mut channel = 0;
+        for sample in data.iter_mut() {
+            let f = ((i as f64) * f64::from(hz) * 2.0 * std::f64::consts::PI
+                / (sample_rate as f64))
+                .sin();
+            let s = ((f * f64::from(std::i16::MAX)) + f64::from(std::i16::MAX)) as u16;
+            *sample = Sample::from(&s);
+            channel += 1;
+            if channel == channel_count {
+                i = i.wrapping_add(1);
+                channel = 0;
+            }
+        }
+    };
+
     let sample_format = supported_config.sample_format();
     let config = supported_config.into();
     let stream = match match sample_format {
-        SampleFormat::F32 => device.build_output_stream(&config, write_silence::<f32>, err_fn),
-        SampleFormat::I16 => device.build_output_stream(&config, write_silence::<i16>, err_fn),
-        SampleFormat::U16 => device.build_output_stream(&config, write_silence::<u16>, err_fn),
+        SampleFormat::F32 => device.build_output_stream(&config, write_sine_f32, err_fn),
+        SampleFormat::I16 => device.build_output_stream(&config, write_sine_i16, err_fn),
+        SampleFormat::U16 => device.build_output_stream(&config, write_sine_u16, err_fn),
     } {
         Ok(s) => s,
         Err(BuildStreamError::DeviceNotAvailable) => return Err(Error::DeviceNotAvailable),
@@ -69,12 +119,6 @@ pub fn silence() -> Result<(), Error> {
         _ => (),
     }
 
-    fn write_silence<T: Sample>(data: &mut [T], _: &cpal::OutputCallbackInfo) {
-        for sample in data.iter_mut() {
-            *sample = Sample::from(&0.0);
-        }
-    }
-
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     Ok(())
@@ -86,6 +130,6 @@ mod tests {
 
     #[test]
     fn it_works() {
-        silence().unwrap();
+        sinewave().unwrap();
     }
 }

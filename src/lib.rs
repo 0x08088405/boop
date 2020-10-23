@@ -22,8 +22,8 @@ pub enum Error {
     StreamIdOverflow,
 }
 
-// Currently sets up an output stream and plays 0.5 seconds of 440Hz beep
-pub fn sinewave() -> Result<(), Error> {
+// Sets up and returns an output stream which will play a 440Hz beep forever until dropped
+pub fn sinewave() -> Result<cpal::Stream, Error> {
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
     let host = cpal::default_host();
@@ -119,9 +119,7 @@ pub fn sinewave() -> Result<(), Error> {
         _ => (),
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    Ok(())
+    Ok(stream)
 }
 
 #[cfg(test)]
@@ -130,6 +128,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        sinewave().unwrap();
+        let _stream = sinewave().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 }

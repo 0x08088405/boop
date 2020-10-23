@@ -23,7 +23,7 @@ pub enum Error {
 }
 
 // Sets up and returns an output stream which will play a 440Hz beep forever until dropped
-pub fn sinewave() -> Result<cpal::Stream, Error> {
+pub fn sinewave(pitch: f64) -> Result<cpal::Stream, Error> {
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
     let host = cpal::default_host();
@@ -50,13 +50,14 @@ pub fn sinewave() -> Result<cpal::Stream, Error> {
 
     let sample_rate = supported_config.sample_rate().0;
     let channel_count: u16 = supported_config.channels();
-    let hz = 440.0;
 
     let mut i: usize = 0;
     let write_sine_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let mut channel = 0;
         for sample in data.iter_mut() {
-            let f = ((i as f32) * hz * 2.0 * std::f32::consts::PI / (sample_rate as f32)).sin();
+            let f = ((i as f32) * (pitch as f32) * 2.0 * std::f32::consts::PI
+                / (sample_rate as f32))
+                .sin();
             *sample = Sample::from(&f);
             channel += 1;
             if channel == channel_count {
@@ -69,9 +70,7 @@ pub fn sinewave() -> Result<cpal::Stream, Error> {
     let write_sine_i16 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
         let mut channel = 0;
         for sample in data.iter_mut() {
-            let f = ((i as f64) * f64::from(hz) * 2.0 * std::f64::consts::PI
-                / (sample_rate as f64))
-                .sin();
+            let f = ((i as f64) * pitch * 2.0 * std::f64::consts::PI / (sample_rate as f64)).sin();
             let s = (f * f64::from(std::i16::MAX)) as i16;
             *sample = Sample::from(&s);
             channel += 1;
@@ -85,9 +84,7 @@ pub fn sinewave() -> Result<cpal::Stream, Error> {
     let write_sine_u16 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
         let mut channel = 0;
         for sample in data.iter_mut() {
-            let f = ((i as f64) * f64::from(hz) * 2.0 * std::f64::consts::PI
-                / (sample_rate as f64))
-                .sin();
+            let f = ((i as f64) * pitch * 2.0 * std::f64::consts::PI / (sample_rate as f64)).sin();
             let s = ((f * f64::from(std::i16::MAX)) + f64::from(std::i16::MAX)) as u16;
             *sample = Sample::from(&s);
             channel += 1;
@@ -128,7 +125,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let _stream = sinewave().unwrap();
+        let _stream = sinewave(440.0).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 }

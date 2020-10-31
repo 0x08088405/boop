@@ -28,17 +28,38 @@ pub enum Error {
     StreamIdOverflow,
 }
 
-/// An audio source. Contains an f32 generator and metadata.
-struct Source {
-    pub generator: Box<dyn FnMut() -> Option<f32> + Send + Sync>,
-    pub channel_count: usize,
-    pub sample_rate: usize,
+/// An audio source. Anything implementing this trait may be played to an output stream.
+pub trait Source {
+    /// Retrieves the nth sample from the audio data represented by this Source object.
+    /// If the input data has more than one channel, samples for each channel are expected to be interleaved.
+    /// This function should return None if index is out-of-bounds (ie. is past the end of the input data.) However,
+    /// input data may be generated endlessly by a Source object, in which case this function should never return None.
+    fn get_sample(&self, index: usize) -> Option<f32>;
+
+    /// Returns the number of channels in this Source object's audio data.
+    fn channel_count(&self) -> usize;
+
+    /// Returns the sample rate of this Source object's audio data.
+    /// For example, a value of 44100 indicates that 44100 samples should be played per second.
+    fn sample_rate(&self) -> usize;
+}
+
+/// A source that is currently being played from.
+/// Stores a Source object and metadata about how much of it has already been played.
+struct ActiveSource {
+    /// Source object being played from.
+    pub source: Box<dyn Source + Send + Sync>,
+
+    /// The number of samples that have been played so far.
+    /// Note: this is the number of samples played at OUTPUT sample rate, ie. the sample rate of the OutputStream which
+    /// owns this object, NOT the sample rate of the Source. This is to make resampling easier.
+    pub sample_index: usize,
 }
 
 /// An audio output stream which plays audio sources. Capable of mixing multiple sources at once.
 pub struct OutputStream {
     _stream: cpal::Stream,
-    sources: Arc<Mutex<Vec<Source>>>,
+    sources: Arc<Mutex<Vec<ActiveSource>>>,
 }
 
 impl OutputStream {
@@ -70,7 +91,8 @@ impl OutputStream {
         }
         .with_max_sample_rate();
 
-        let sources = Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
+        let sources: Arc<Mutex<Vec<ActiveSource>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
         let closure_sources = sources.clone();
 
         let _sample_rate = supported_config.sample_rate().0; // TODO: interpolation
@@ -83,35 +105,44 @@ impl OutputStream {
             data.iter_mut().for_each(|x| *x = 0.0);
 
             // Iterate slices of output data so that we're writing one sample per channel at a time
-            let sources: &mut Vec<Source> = &mut *closure_sources.lock().unwrap();
+            let sources = &mut *closure_sources.lock().unwrap();
             for output_samples in data.chunks_exact_mut(output_channel_count) {
                 // Go through all our sources and mix them into the output buffer
                 // Note: retain() is used here so that we can mix while also removing any
                 // empty generators from the list in one pass.
-                sources.retain_mut(|source| {
-                    if source.channel_count == output_channel_count {
-                        // Firstly, if the input and output channel counts are the same, pass straight through.
-                        for out_sample in output_samples.iter_mut() {
-                            if let Some(in_sample) = source.generator.as_mut()() {
-                                *out_sample += in_sample;
+                sources.retain_mut(
+                    |ActiveSource {
+                         source,
+                         sample_index,
+                     }| {
+                        let source_channel_count = source.channel_count();
+
+                        if source_channel_count == output_channel_count {
+                            // Firstly, if the input and output channel counts are the same, pass straight through.
+                            for out_sample in output_samples.iter_mut() {
+                                if let Some(in_sample) = source.get_sample(*sample_index) {
+                                    *out_sample += in_sample;
+                                    *sample_index += 1;
+                                } else {
+                                    return false;
+                                }
+                            }
+                        } else if source_channel_count == 1 {
+                            // Next, if the input is 1-channel, duplicate the next sample across all output channels.
+                            if let Some(in_sample) = source.get_sample(*sample_index) {
+                                output_samples.iter_mut().for_each(|x| *x += in_sample);
+                                *sample_index += 1;
                             } else {
                                 return false;
                             }
-                        }
-                    } else if source.channel_count == 1 {
-                        // Next, if the input is 1-channel, duplicate the next sample across all output channels.
-                        if let Some(in_sample) = source.generator.as_mut()() {
-                            output_samples.iter_mut().for_each(|x| *x += in_sample);
                         } else {
-                            return false;
+                            // Different multi-channel counts. What do we do here!?
+                            todo!("multi-channel mixing")
                         }
-                    } else {
-                        // Different multi-channel counts. What do we do here!?
-                        todo!("multi-channel mixing")
-                    }
 
-                    true
-                });
+                        true
+                    },
+                );
             }
         };
 
@@ -146,18 +177,12 @@ impl OutputStream {
         })
     }
 
-    /// Adds an audio source to the output stream. The source will be played from until it ends.
-    pub fn add_source(
-        &self,
-        generator: Box<dyn FnMut() -> Option<f32> + Send + Sync>,
-        channel_count: usize,
-        sample_rate: usize,
-    ) {
+    /// Adds an audio source to the output stream. The source will be played until it ends.
+    pub fn add_source(&self, source: impl Source + Send + Sync + 'static) {
         let sources = &mut *self.sources.lock().unwrap();
-        sources.push(Source {
-            generator,
-            channel_count,
-            sample_rate,
+        sources.push(ActiveSource {
+            source: Box::new(source),
+            sample_index: 0,
         });
     }
 }
@@ -192,40 +217,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sinewave() {
+    fn sinewaves() {
         // Sinewave generators
-        let mut i: usize = 0;
-        let sinewave440_1chan = move || -> Option<f32> {
-            if i < 72000 {
-                let f = ((i as f32) * 440.0 * 2.0 * std::f32::consts::PI / 48000.0).sin();
-                i = i.wrapping_add(1);
-                Some(f)
-            } else {
-                None
+        struct Sinewave440();
+        impl Source for Sinewave440 {
+            fn get_sample(&self, index: usize) -> Option<f32> {
+                if index < 72000 {
+                    Some(((index as f32) * 440.0 * 2.0 * std::f32::consts::PI / 48000.0).sin())
+                } else {
+                    None
+                }
             }
-        };
-        let mut i: usize = 0;
-        let mut b = true;
-        let sinewave800_2chan = move || -> Option<f32> {
-            let f = ((i as f32) * 800.0 * 2.0 * std::f32::consts::PI / 48000.0).sin();
-            if b {
-                b = false;
-            } else {
-                i = i.wrapping_add(1);
-                b = true;
+
+            fn channel_count(&self) -> usize {
+                1
             }
-            Some(f)
-        };
+
+            fn sample_rate(&self) -> usize {
+                48000
+            }
+        }
+
+        struct Sinewave800();
+        impl Source for Sinewave800 {
+            fn get_sample(&self, index: usize) -> Option<f32> {
+                Some((((index / 2) as f32) * 800.0 * 2.0 * std::f32::consts::PI / 48000.0).sin())
+            }
+
+            fn channel_count(&self) -> usize {
+                2
+            }
+
+            fn sample_rate(&self) -> usize {
+                48000
+            }
+        }
 
         // Set up stream
         let stream = OutputStream::new().unwrap();
 
         // Play a 440 Hz 1-channel beep which will stop after 1.5 seconds, then wait 1 second
-        stream.add_source(Box::new(sinewave440_1chan), 1, 48000);
+        stream.add_source(Sinewave440());
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Play an 800 Hz 2-channel beep, then wait 1 second
-        stream.add_source(Box::new(sinewave800_2chan), 2, 48000);
+        stream.add_source(Sinewave800());
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 }

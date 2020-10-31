@@ -1,5 +1,11 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BuildStreamError, PlayStreamError, Sample, SampleFormat, SupportedStreamConfigsError};
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    BuildStreamError, PlayStreamError, SampleFormat, SupportedStreamConfigsError,
+};
+use std::sync::{Arc, Mutex};
+
+// Initial capacity for the Vec of audio sources in an OutputStream
+const SOURCES_INIT_CAPACITY: usize = 8;
 
 #[derive(Debug)]
 pub enum Error {
@@ -22,8 +28,21 @@ pub enum Error {
     StreamIdOverflow,
 }
 
-// Sets up and returns an output stream which will play a 440Hz beep forever until dropped
-pub fn sinewave(pitch: f64) -> Result<cpal::Stream, Error> {
+/// An audio source. Contains an f32 generator and metadata.
+struct Source {
+    pub generator: Box<dyn FnMut() -> Option<f32> + Send + Sync>,
+    pub channel_count: usize,
+    pub sample_rate: usize,
+}
+
+/// An audio output stream which plays audio sources. Capable of mixing multiple sources at once.
+pub struct OutputStream {
+    _stream: cpal::Stream,
+    sources: Arc<Mutex<Vec<Source>>>,
+}
+
+// Sets up and returns an OutputStream
+pub fn setup() -> Result<OutputStream, Error> {
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
     let host = cpal::default_host();
@@ -48,52 +67,54 @@ pub fn sinewave(pitch: f64) -> Result<cpal::Stream, Error> {
     }
     .with_max_sample_rate();
 
-    let sample_rate = supported_config.sample_rate().0;
+    let sources = Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
+    let closure_sources = sources.clone();
+
+    let _sample_rate = supported_config.sample_rate().0; // TODO: interpolation
     let channel_count: u16 = supported_config.channels();
 
-    let mut i: usize = 0;
     let write_sine_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        let mut channel = 0;
-        for sample in data.iter_mut() {
-            let f = ((i as f32) * (pitch as f32) * 2.0 * std::f32::consts::PI
-                / (sample_rate as f32))
-                .sin();
-            *sample = Sample::from(&f);
-            channel += 1;
-            if channel == channel_count {
-                i = i.wrapping_add(1);
-                channel = 0;
-            }
+        let output_channel_count = usize::from(channel_count);
+
+        // Zero all the output samples
+        data.iter_mut().for_each(|x| *x = 0.0);
+
+        // Iterate slices of output data so that we're writing one sample per channel at a time
+        let sources: &mut Vec<Source> = &mut *closure_sources.lock().unwrap();
+        for output_samples in data.chunks_exact_mut(output_channel_count) {
+            // Go through all our sources and mix them into the output buffer
+            // Note: retain() is used here so that we can mix while also removing any
+            // empty generators from the list in one pass.
+            sources.retain_mut(|source| {
+                if source.channel_count == output_channel_count {
+                    // Firstly, if the input and output channel counts are the same, pass straight through.
+                    for out_sample in output_samples.iter_mut() {
+                        if let Some(in_sample) = source.generator.as_mut()() {
+                            *out_sample += in_sample;
+                        } else {
+                            return false;
+                        }
+                    }
+                } else if source.channel_count == 1 {
+                    // Next, if the input is 1-channel, duplicate the next sample across all output channels.
+                    if let Some(in_sample) = source.generator.as_mut()() {
+                        output_samples.iter_mut().for_each(|x| *x += in_sample);
+                    } else {
+                        return false;
+                    }
+                } else {
+                    // Different multi-channel counts. What do we do here!?
+                    todo!("multi-channel mixing")
+                }
+
+                true
+            });
         }
     };
 
-    let write_sine_i16 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-        let mut channel = 0;
-        for sample in data.iter_mut() {
-            let f = ((i as f64) * pitch * 2.0 * std::f64::consts::PI / (sample_rate as f64)).sin();
-            let s = (f * f64::from(std::i16::MAX)) as i16;
-            *sample = Sample::from(&s);
-            channel += 1;
-            if channel == channel_count {
-                i = i.wrapping_add(1);
-                channel = 0;
-            }
-        }
-    };
+    let write_sine_i16 = move |_data: &mut [i16], _: &cpal::OutputCallbackInfo| todo!("write_i16");
 
-    let write_sine_u16 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-        let mut channel = 0;
-        for sample in data.iter_mut() {
-            let f = ((i as f64) * pitch * 2.0 * std::f64::consts::PI / (sample_rate as f64)).sin();
-            let s = ((f * f64::from(std::i16::MAX)) + f64::from(std::i16::MAX)) as u16;
-            *sample = Sample::from(&s);
-            channel += 1;
-            if channel == channel_count {
-                i = i.wrapping_add(1);
-                channel = 0;
-            }
-        }
-    };
+    let write_sine_u16 = move |_data: &mut [u16], _: &cpal::OutputCallbackInfo| todo!("write_u16");
 
     let sample_format = supported_config.sample_format();
     let config = supported_config.into();
@@ -116,7 +137,52 @@ pub fn sinewave(pitch: f64) -> Result<cpal::Stream, Error> {
         _ => (),
     }
 
-    Ok(stream)
+    Ok(OutputStream {
+        _stream: stream,
+        sources,
+    })
+}
+
+impl OutputStream {
+    /// Adds an audio source to the output stream. The source will be played from until it ends.
+    pub fn add_source(
+        &self,
+        generator: Box<dyn FnMut() -> Option<f32> + Send + Sync>,
+        channel_count: usize,
+        sample_rate: usize,
+    ) {
+        let sources = &mut *self.sources.lock().unwrap();
+        sources.push(Source {
+            generator,
+            channel_count,
+            sample_rate,
+        });
+    }
+}
+
+trait RetainMut<T> {
+    fn retain_mut(&mut self, f: impl FnMut(&mut T) -> bool);
+}
+
+impl<T> RetainMut<T> for Vec<T> {
+    fn retain_mut(&mut self, mut f: impl FnMut(&mut T) -> bool) {
+        let len = self.len();
+        let mut del = 0;
+        {
+            let v = &mut **self;
+
+            for i in 0..len {
+                if !f(&mut v[i]) {
+                    del += 1;
+                } else if del > 0 {
+                    v.swap(i - del, i);
+                }
+            }
+        }
+        if del > 0 {
+            self.truncate(len - del);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -124,8 +190,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let _stream = sinewave(440.0).unwrap();
+    fn sinewave() {
+        // Sinewave generators
+        let mut i: usize = 0;
+        let sinewave440_1chan = move || -> Option<f32> {
+            if i < 72000 {
+                let f = ((i as f32) * 440.0 * 2.0 * std::f32::consts::PI / 48000.0).sin();
+                i = i.wrapping_add(1);
+                Some(f)
+            } else {
+                None
+            }
+        };
+        let mut i: usize = 0;
+        let mut b = true;
+        let sinewave800_2chan = move || -> Option<f32> {
+            let f = ((i as f32) * 800.0 * 2.0 * std::f32::consts::PI / 48000.0).sin();
+            if b {
+                b = false;
+            } else {
+                i = i.wrapping_add(1);
+                b = true;
+            }
+            Some(f)
+        };
+
+        // Set up stream
+        let stream = setup().unwrap();
+
+        // Play a 440 Hz 1-channel beep which will stop after 1.5 seconds, then wait 1 second
+        stream.add_source(Box::new(sinewave440_1chan), 1, 48000);
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Play an 800 Hz 2-channel beep, then wait 1 second
+        stream.add_source(Box::new(sinewave800_2chan), 2, 48000);
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 }

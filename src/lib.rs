@@ -73,7 +73,7 @@ pub fn setup() -> Result<OutputStream, Error> {
     let _sample_rate = supported_config.sample_rate().0; // TODO: interpolation
     let channel_count: u16 = supported_config.channels();
 
-    let write_sine_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+    let write_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let output_channel_count = usize::from(channel_count);
 
         // Zero all the output samples
@@ -112,16 +112,16 @@ pub fn setup() -> Result<OutputStream, Error> {
         }
     };
 
-    let write_sine_i16 = move |_data: &mut [i16], _: &cpal::OutputCallbackInfo| todo!("write_i16");
+    let write_i16 = move |_data: &mut [i16], _: &cpal::OutputCallbackInfo| todo!("write_i16");
 
-    let write_sine_u16 = move |_data: &mut [u16], _: &cpal::OutputCallbackInfo| todo!("write_u16");
+    let write_u16 = move |_data: &mut [u16], _: &cpal::OutputCallbackInfo| todo!("write_u16");
 
     let sample_format = supported_config.sample_format();
     let config = supported_config.into();
     let stream = match match sample_format {
-        SampleFormat::F32 => device.build_output_stream(&config, write_sine_f32, err_fn),
-        SampleFormat::I16 => device.build_output_stream(&config, write_sine_i16, err_fn),
-        SampleFormat::U16 => device.build_output_stream(&config, write_sine_u16, err_fn),
+        SampleFormat::F32 => device.build_output_stream(&config, write_f32, err_fn),
+        SampleFormat::I16 => device.build_output_stream(&config, write_i16, err_fn),
+        SampleFormat::U16 => device.build_output_stream(&config, write_u16, err_fn),
     } {
         Ok(s) => s,
         Err(BuildStreamError::DeviceNotAvailable) => return Err(Error::DeviceNotAvailable),

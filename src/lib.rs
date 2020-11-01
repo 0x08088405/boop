@@ -95,7 +95,7 @@ impl OutputStream {
             Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
         let closure_sources = sources.clone();
 
-        let _sample_rate = supported_config.sample_rate().0; // TODO: interpolation
+        let sample_rate = supported_config.sample_rate().0;
         let channel_count: u16 = supported_config.channels();
 
         let write_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -117,24 +117,53 @@ impl OutputStream {
                      }| {
                         let source_channel_count = source.channel_count();
 
+                        // Calculate the actual poin in the source data that we want to interpolate
+                        let source_point = ((source.sample_rate() as f64) / f64::from(sample_rate))
+                            * (*sample_index / source_channel_count) as f64;
+                        let idx_before_source_point = source_point.floor() as usize;
+
+                        // If we're past the end of the audio data, indicate it by returning false
+                        if source
+                            .get_sample((idx_before_source_point + 1) * source_channel_count)
+                            .is_none()
+                        {
+                            return false;
+                        }
+
                         if source_channel_count == output_channel_count {
                             // Firstly, if the input and output channel counts are the same, pass straight through.
-                            for out_sample in output_samples.iter_mut() {
-                                if let Some(in_sample) = source.get_sample(*sample_index) {
-                                    *out_sample += in_sample;
-                                    *sample_index += 1;
-                                } else {
-                                    return false;
-                                }
+                            for (i, out_sample) in output_samples.iter_mut().enumerate() {
+                                let start_sample = source
+                                    .get_sample(
+                                        (idx_before_source_point * source_channel_count) + i,
+                                    )
+                                    .unwrap_or_default();
+                                let end_sample = source
+                                    .get_sample(
+                                        (idx_before_source_point * source_channel_count)
+                                            + source_channel_count
+                                            + i,
+                                    )
+                                    .unwrap_or_default();
+
+                                *out_sample += start_sample
+                                    + ((end_sample - start_sample) * source_point.fract() as f32);
+                                *sample_index += 1;
                             }
                         } else if source_channel_count == 1 {
                             // Next, if the input is 1-channel, duplicate the next sample across all output channels.
-                            if let Some(in_sample) = source.get_sample(*sample_index) {
-                                output_samples.iter_mut().for_each(|x| *x += in_sample);
-                                *sample_index += 1;
-                            } else {
-                                return false;
-                            }
+                            let start_sample = source
+                                .get_sample(idx_before_source_point)
+                                .unwrap_or_default();
+                            let end_sample = source
+                                .get_sample(idx_before_source_point + 1)
+                                .unwrap_or_default();
+
+                            output_samples.iter_mut().for_each(|x| {
+                                *x += start_sample
+                                    + ((end_sample - start_sample) * source_point.fract() as f32)
+                            });
+                            *sample_index += 1;
                         } else {
                             // Different multi-channel counts. What do we do here!?
                             todo!("multi-channel mixing")
@@ -222,8 +251,8 @@ mod tests {
         struct Sinewave440();
         impl Source for Sinewave440 {
             fn get_sample(&self, index: usize) -> Option<f32> {
-                if index < 72000 {
-                    Some(((index as f32) * 440.0 * 2.0 * std::f32::consts::PI / 48000.0).sin())
+                if index < 66150 {
+                    Some(((index as f32) * 440.0 * 2.0 * std::f32::consts::PI / 44100.0).sin())
                 } else {
                     None
                 }
@@ -234,14 +263,14 @@ mod tests {
             }
 
             fn sample_rate(&self) -> usize {
-                48000
+                44100
             }
         }
 
         struct Sinewave800();
         impl Source for Sinewave800 {
             fn get_sample(&self, index: usize) -> Option<f32> {
-                Some((((index / 2) as f32) * 800.0 * 2.0 * std::f32::consts::PI / 48000.0).sin())
+                Some((((index / 2) as f32) * 800.0 * 2.0 * std::f32::consts::PI / 22000.0).sin())
             }
 
             fn channel_count(&self) -> usize {
@@ -249,7 +278,7 @@ mod tests {
             }
 
             fn sample_rate(&self) -> usize {
-                48000
+                22000
             }
         }
 

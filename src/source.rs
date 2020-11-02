@@ -1,3 +1,5 @@
+pub mod wav;
+
 /// An audio source. Anything implementing this trait may be played to an output stream.
 pub trait Source {
     /// Retrieves the nth sample from the audio data represented by this Source object.

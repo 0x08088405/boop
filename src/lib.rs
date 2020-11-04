@@ -1,8 +1,10 @@
 mod error;
-mod source;
+pub mod resampler;
+pub mod source;
 mod stream;
 
 pub use error::Error;
+pub use resampler::Resampler;
 pub use source::Source;
 pub use stream::OutputStream;
 

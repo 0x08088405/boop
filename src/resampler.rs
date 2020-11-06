@@ -7,7 +7,7 @@ pub struct Polyphase {
     from: u32,
     to: u32,
     left_offset: u32,
-    cutoff: f64,
+    kaiser_values: Box<[f64]>,
 }
 
 impl Resampler for Polyphase {
@@ -31,24 +31,6 @@ impl Resampler for Polyphase {
             }
         }
 
-        let gcd = gcd(source_rate, dest_rate);
-        let from = source_rate / gcd;
-        let to = dest_rate / gcd;
-
-        let downscale_factor = f64::from(from.max(to));
-        let cutoff = 0.475 / downscale_factor;
-        let width = 0.05 / downscale_factor;
-        let left_offset = (kaiser_order(180.0, width) + 1) / 2;
-
-        Self {
-            from,
-            to,
-            left_offset,
-            cutoff,
-        }
-    }
-
-    fn resample(&self, input: &[f32], output: &mut [f32]) -> usize {
         fn sinc_filter(left: u32, gain: f64, cutoff: f64, i: u32) -> f64 {
             #[inline]
             fn sinc(x: f64) -> f64 {
@@ -98,7 +80,34 @@ impl Resampler for Polyphase {
             kaiser(x / f64::from(left)) * 2.0 * gain * cutoff * sinc(2.0 * cutoff * x)
         }
 
-        let m = self.left_offset * 2 + 1;
+        let gcd = gcd(source_rate, dest_rate);
+        let from = source_rate / gcd;
+        let to = dest_rate / gcd;
+
+        let downscale_factor = f64::from(from.max(to));
+        let cutoff = 0.475 / downscale_factor;
+        let width = 0.05 / downscale_factor;
+        let left_offset = (kaiser_order(180.0, width) + 1) / 2;
+
+        let kaiser_values = {
+            let value_count = left_offset * 2 + 1;
+            let mut v = Vec::with_capacity(value_count as usize);
+            for i in 0..value_count {
+                v.push(sinc_filter(left_offset, f64::from(to), cutoff, i))
+            }
+            v.into_boxed_slice()
+        };
+
+        Self {
+            from,
+            to,
+            left_offset,
+            kaiser_values,
+        }
+    }
+
+    fn resample(&self, input: &[f32], output: &mut [f32]) -> usize {
+        let kaiser_order = self.kaiser_values.len() as u32;
 
         for (i, out_sample) in output.iter_mut().enumerate() {
             let start = self.left_offset + (self.from * i as u32);
@@ -106,9 +115,8 @@ impl Resampler for Polyphase {
             let mut j_s = start / self.to;
             let mut r = 0.0f64;
 
-            if j_f < m {
-                // Pretty sure this is the C bound check. And leaves the output sample as 0.0 otherwise
-                let mut filter_length = (m - j_f + self.to - 1) / self.to;
+            if j_f < kaiser_order {
+                let mut filter_length = (kaiser_order - j_f + self.to - 1) / self.to;
 
                 if j_s + 1 > input.len() as u32 {
                     let skip = filter_length.min(j_s + 1 - input.len() as u32);
@@ -119,8 +127,7 @@ impl Resampler for Polyphase {
 
                 for (_, s) in (0..filter_length).zip(input[0..=j_s as usize].iter().copied().rev())
                 {
-                    r += sinc_filter(self.left_offset, f64::from(self.to), self.cutoff, j_f)
-                        * f64::from(s);
+                    r += self.kaiser_values[j_f as usize] * f64::from(s);
                     j_f += self.to;
                 }
             }

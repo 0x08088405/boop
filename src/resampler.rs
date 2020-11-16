@@ -3,7 +3,7 @@ const FILTER_SIZE: u32 = 240;
 
 pub trait Resampler {
     fn new(source_rate: u32, dest_rate: u32) -> Self;
-    fn resample(&self, input: &[f32]) -> Box<[f32]>;
+    fn resample(&self, input: &[f32], channels: usize) -> Box<[f32]>;
 }
 
 pub struct Polyphase {
@@ -90,7 +90,13 @@ impl Resampler for Polyphase {
         Self { from, to, left_offset: u64::from(left_offset), kaiser_values }
     }
 
-    fn resample(&self, input: &[f32]) -> Box<[f32]> {
+    fn resample(&self, input: &[f32], channels: usize) -> Box<[f32]> {
+        // 0 channels is a nonsensical request and would result in a divion by zero.
+        assert!(channels != 0);
+
+        // Ensure input.len() is an exact multiple of the channel count.
+        assert_eq!((input.len() / channels) * channels, input.len());
+
         let output_count = ((input.len() as f64) * (f64::from(self.to) / f64::from(self.from))).ceil() as u64;
         let from = u64::from(self.from);
         let to = u64::from(self.to);
@@ -101,17 +107,23 @@ impl Resampler for Polyphase {
             // We first calculate an upscaled sample index ("start"), then take both its division and modulo
             // with our target sample rate. The int-division gives us a sample index in input data, and
             // the modulo gives us our kaiser offset.
-            let start = self.left_offset + (from * i);
+            let start = self.left_offset + (from * i / channels as u64);
             // Putting these two calculations together means the compiler will do them with a single IDIV.
             let kaiser_index = start % to;
             let input_index = start / to;
 
+            // Tells us which channel we're currently looking at in the output data.
+            // We should only be using input data from the same channel.
+            let channel = i as usize % channels;
+
             // Check if the range we need to access is entirely in-bounds
-            let sample = if let Some(i) = input.get(0..=input_index as usize) {
+            let sample = if let Some(i) = input.get(0..((input_index + 1) as usize * channels)) {
                 // Multiply this set of input data by the relevant set of kaiser values and add them all together
                 i.iter()
                     .copied()
                     .rev()
+                    .skip(channels - channel - 1)
+                    .step_by(channels)
                     .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
                     .map(|(s, k)| f64::from(s) * k)
                     .sum::<f64>()
@@ -120,11 +132,13 @@ impl Resampler for Polyphase {
                 // Do similar to the above, but iterate from the end of the sound and skip `n` kaiser values
                 // where `n` is the number of samples we went past the end.
                 // The range being entirely OOB should never happen, but if it does, this will output 0.0 (silence).
-                let skip = input_index + 1 - input.len() as u64;
+                let skip = input_index + 1 - (input.len() / channels) as u64;
                 input
                     .iter()
                     .copied()
                     .rev()
+                    .skip(channels - channel - 1)
+                    .step_by(channels)
                     .zip(self.kaiser_values.iter().skip((kaiser_index + (to * skip)) as usize).step_by(to as usize))
                     .map(|(s, k)| f64::from(s) * k)
                     .sum::<f64>()

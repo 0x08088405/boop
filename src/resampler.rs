@@ -1,17 +1,20 @@
 pub trait Resampler {
     fn new(source_rate: u32, dest_rate: u32) -> Self;
-    fn resample(&self, input: &[f32], output: &mut [f32]) -> usize;
+    fn resample(&self, input: &[f32]) -> Box<[f32]>;
 }
 
 pub struct Polyphase {
     from: u32,
     to: u32,
-    left_offset: u32,
+    left_offset: u64,
     kaiser_values: Box<[f64]>,
 }
 
 impl Resampler for Polyphase {
     fn new(source_rate: u32, dest_rate: u32) -> Self {
+        assert!(source_rate != 0);
+        assert!(dest_rate != 0);
+
         #[inline]
         fn gcd(a: u32, b: u32) -> u32 {
             if b == 0 {
@@ -22,16 +25,16 @@ impl Resampler for Polyphase {
         }
 
         #[inline]
-        fn kaiser_order(rejection: f64, transition: f64) -> u32 {
+        fn kaiser_order(rejection: f64, transition: f64) -> u64 {
             if rejection > 21.0 {
                 ((rejection - 7.95) / (2.285 * 2.0 * std::f64::consts::PI * transition)).ceil()
-                    as u32
+                    as u64
             } else {
-                (5.79 / (2.0 * std::f64::consts::PI * transition)).ceil() as u32
+                (5.79 / (2.0 * std::f64::consts::PI * transition)).ceil() as u64
             }
         }
 
-        fn sinc_filter(left: u32, gain: f64, cutoff: f64, i: u32) -> f64 {
+        fn sinc_filter(left: u64, gain: f64, cutoff: f64, i: u64) -> f64 {
             #[inline]
             fn sinc(x: f64) -> f64 {
                 if x == 0.0 {
@@ -76,15 +79,16 @@ impl Resampler for Polyphase {
                 }
             }
 
-            let x = f64::from(i) - f64::from(left);
-            kaiser(x / f64::from(left)) * 2.0 * gain * cutoff * sinc(2.0 * cutoff * x)
+            let left = left as f64;
+            let x = (i as f64) - left;
+            kaiser(x / left) * 2.0 * gain * cutoff * sinc(2.0 * cutoff * x)
         }
 
         let gcd = gcd(source_rate, dest_rate);
         let from = source_rate / gcd;
         let to = dest_rate / gcd;
 
-        let downscale_factor = f64::from(from.max(to));
+        let downscale_factor = f64::from(to);
         let cutoff = 0.475 / downscale_factor;
         let width = 0.05 / downscale_factor;
         let left_offset = (kaiser_order(180.0, width) + 1) / 2;
@@ -93,7 +97,7 @@ impl Resampler for Polyphase {
             let value_count = left_offset * 2 + 1;
             let mut v = Vec::with_capacity(value_count as usize);
             for i in 0..value_count {
-                v.push(sinc_filter(left_offset, f64::from(to), cutoff, i))
+                v.push(sinc_filter(left_offset, downscale_factor, cutoff, i))
             }
             v.into_boxed_slice()
         };
@@ -106,35 +110,38 @@ impl Resampler for Polyphase {
         }
     }
 
-    fn resample(&self, input: &[f32], output: &mut [f32]) -> usize {
-        let kaiser_order = self.kaiser_values.len() as u32;
+    fn resample(&self, input: &[f32]) -> Box<[f32]> {
+        let kaiser_order = self.kaiser_values.len() as u64;
+        let output_count = ((input.len() as f64) * (f64::from(self.to) / f64::from(self.from))).ceil() as u64;
+        let from = u64::from(self.from);
+        let to = u64::from(self.to);
+        let mut output: Vec<f32> = Vec::with_capacity(output_count as usize);
 
-        for (i, out_sample) in output.iter_mut().enumerate() {
-            let start = self.left_offset + (self.from * i as u32);
-            let mut j_f = start % self.to;
-            let mut j_s = start / self.to;
+        for i in 0..output_count {
+            let start = self.left_offset + (from * i);
+            let mut kaiser_index = start % to;
+            let mut input_index = start / to;
             let mut r = 0.0f64;
 
-            if j_f < kaiser_order {
-                let mut filter_length = (kaiser_order - j_f + self.to - 1) / self.to;
+            if kaiser_index < kaiser_order {
+                let mut filter_length = (kaiser_order - kaiser_index + to - 1) / to;
 
-                if j_s + 1 > input.len() as u32 {
-                    let skip = filter_length.min(j_s + 1 - input.len() as u32);
-                    j_f += self.to * skip;
-                    j_s -= skip;
+                if input_index >= input.len() as u64 {
+                    let skip = filter_length.min(input_index - (input.len() as u64 + 1));
+                    kaiser_index += to * skip;
+                    input_index -= skip;
                     filter_length -= skip;
                 }
 
-                for (_, s) in (0..filter_length).zip(input[0..=j_s as usize].iter().copied().rev())
-                {
-                    r += self.kaiser_values[j_f as usize] * f64::from(s);
-                    j_f += self.to;
+                for s in input[0..=input_index as usize].iter().copied().rev().take(filter_length as usize) {
+                    r += self.kaiser_values[kaiser_index as usize] * f64::from(s);
+                    kaiser_index += to;
                 }
             }
 
-            *out_sample = r as f32;
+            output.push(r as f32);
         }
 
-        output.len()
+        output.into()
     }
 }

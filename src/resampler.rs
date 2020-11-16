@@ -1,5 +1,4 @@
-/// Filter size used by the polyphase resampler.
-/// Some of the sinc filter functions are designed for this size, so changing it probably won't work how you expect.
+/// Filter size used by the polyphase resampler - change this for quality/performance tradeoff
 const FILTER_SIZE: u32 = 240;
 
 pub trait Resampler {

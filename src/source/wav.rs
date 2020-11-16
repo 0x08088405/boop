@@ -6,6 +6,7 @@ pub struct WavPlayer {
     sample_rate: usize,
     block_align: usize,
     data_start: usize,
+    data_end: usize,
     sample_getter: fn(&[u8], usize) -> Option<f32>,
 }
 
@@ -79,6 +80,7 @@ impl WavPlayer {
             sample_rate: sample_rate as usize,
             block_align: block_align.into(),
             data_start,
+            data_end: data_start + data_len,
             sample_getter,
         })
     }
@@ -86,8 +88,8 @@ impl WavPlayer {
 
 impl Source for WavPlayer {
     fn get_sample(&self, index: usize) -> Option<f32> {
-        let offset = self.data_start + (index * self.block_align);
-        (self.sample_getter)(&self.file, offset)
+        let offset = index * self.block_align;
+        (self.sample_getter)(&self.file[self.data_start..self.data_end], offset)
     }
 
     fn channel_count(&self) -> usize {

@@ -1,3 +1,7 @@
+/// Filter size used by the polyphase resampler.
+/// Some of the sinc filter functions are designed for this size, so changing it probably won't work how you expect.
+const FILTER_SIZE: u32 = 240;
+
 pub trait Resampler {
     fn new(source_rate: u32, dest_rate: u32) -> Self;
     fn resample(&self, input: &[f32]) -> Box<[f32]>;
@@ -17,24 +21,10 @@ impl Resampler for Polyphase {
 
         #[inline]
         fn gcd(a: u32, b: u32) -> u32 {
-            if b == 0 {
-                a
-            } else {
-                gcd(b, a % b)
-            }
+            if b == 0 { a } else { gcd(b, a % b) }
         }
 
-        #[inline]
-        fn kaiser_order(rejection: f64, transition: f64) -> u64 {
-            if rejection > 21.0 {
-                ((rejection - 7.95) / (2.285 * 2.0 * std::f64::consts::PI * transition)).ceil()
-                    as u64
-            } else {
-                (5.79 / (2.0 * std::f64::consts::PI * transition)).ceil() as u64
-            }
-        }
-
-        fn sinc_filter(left: u64, gain: f64, cutoff: f64, i: u64) -> f64 {
+        fn sinc_filter(left: u32, gain: f64, cutoff: f64, i: u32) -> f64 {
             #[inline]
             fn sinc(x: f64) -> f64 {
                 if x == 0.0 {
@@ -53,9 +43,7 @@ impl Resampler for Polyphase {
                     let y = (x / 3.75).powi(2);
                     1.0 + y
                         * (3.5156229
-                            + y * (3.0899424
-                                + y * (1.2067492
-                                    + y * (0.2659732 + y * (0.360768e-1 + y * 0.45813e-2)))))
+                            + y * (3.0899424 + y * (1.2067492 + y * (0.2659732 + y * (0.360768e-1 + y * 0.45813e-2)))))
                 } else {
                     let y = 3.75 / ax;
                     (ax.exp() / ax.sqrt())
@@ -65,8 +53,7 @@ impl Resampler for Polyphase {
                                     + y * (-0.157565e-2
                                         + y * (0.916281e-2
                                             + y * (-0.2057706e-1
-                                                + y * (0.2635537e-1
-                                                    + y * (-0.1647633e-1 + y * 0.392377e-2))))))))
+                                                + y * (0.2635537e-1 + y * (-0.1647633e-1 + y * 0.392377e-2))))))))
                 }
             }
 
@@ -79,8 +66,8 @@ impl Resampler for Polyphase {
                 }
             }
 
-            let left = left as f64;
-            let x = (i as f64) - left;
+            let left = f64::from(left);
+            let x = f64::from(i) - left;
             kaiser(x / left) * 2.0 * gain * cutoff * sinc(2.0 * cutoff * x)
         }
 
@@ -90,11 +77,10 @@ impl Resampler for Polyphase {
 
         let downscale_factor = f64::from(to);
         let cutoff = 0.475 / downscale_factor;
-        let width = 0.05 / downscale_factor;
-        let left_offset = (kaiser_order(180.0, width) + 1) / 2;
+        let left_offset = (FILTER_SIZE / 2) * to;
 
         let kaiser_values = {
-            let value_count = left_offset * 2 + 1;
+            let value_count = FILTER_SIZE * to;
             let mut v = Vec::with_capacity(value_count as usize);
             for i in 0..value_count {
                 v.push(sinc_filter(left_offset, downscale_factor, cutoff, i))
@@ -102,44 +88,49 @@ impl Resampler for Polyphase {
             v.into_boxed_slice()
         };
 
-        Self {
-            from,
-            to,
-            left_offset,
-            kaiser_values,
-        }
+        Self { from, to, left_offset: u64::from(left_offset), kaiser_values }
     }
 
     fn resample(&self, input: &[f32]) -> Box<[f32]> {
-        let kaiser_order = self.kaiser_values.len() as u64;
         let output_count = ((input.len() as f64) * (f64::from(self.to) / f64::from(self.from))).ceil() as u64;
         let from = u64::from(self.from);
         let to = u64::from(self.to);
         let mut output: Vec<f32> = Vec::with_capacity(output_count as usize);
 
         for i in 0..output_count {
+            // Here, we calculate which input sample to start at and which set of kaiser values to use.
+            // We first calculate an upscaled sample index ("start"), then take both its division and modulo
+            // with our target sample rate. The int-division gives us a sample index in input data, and
+            // the modulo gives us our kaiser offset.
             let start = self.left_offset + (from * i);
-            let mut kaiser_index = start % to;
-            let mut input_index = start / to;
-            let mut r = 0.0f64;
+            // Putting these two calculations together means the compiler will do them with a single IDIV.
+            let kaiser_index = start % to;
+            let input_index = start / to;
 
-            if kaiser_index < kaiser_order {
-                let mut filter_length = (kaiser_order - kaiser_index + to - 1) / to;
-
-                if input_index >= input.len() as u64 {
-                    let skip = filter_length.min(input_index - (input.len() as u64 + 1));
-                    kaiser_index += to * skip;
-                    input_index -= skip;
-                    filter_length -= skip;
-                }
-
-                for s in input[0..=input_index as usize].iter().copied().rev().take(filter_length as usize) {
-                    r += self.kaiser_values[kaiser_index as usize] * f64::from(s);
-                    kaiser_index += to;
-                }
-            }
-
-            output.push(r as f32);
+            // Check if the range we need to access is entirely in-bounds
+            let sample = if let Some(i) = input.get(0..=input_index as usize) {
+                // Multiply this set of input data by the relevant set of kaiser values and add them all together
+                i.iter()
+                    .copied()
+                    .rev()
+                    .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
+                    .map(|(s, k)| f64::from(s) * k)
+                    .sum::<f64>()
+            } else {
+                // The range of input data we want is partially past the end of the input data.
+                // Do similar to the above, but iterate from the end of the sound and skip `n` kaiser values
+                // where `n` is the number of samples we went past the end.
+                // The range being entirely OOB should never happen, but if it does, this will output 0.0 (silence).
+                let skip = input_index + 1 - input.len() as u64;
+                input
+                    .iter()
+                    .copied()
+                    .rev()
+                    .zip(self.kaiser_values.iter().skip((kaiser_index + (to * skip)) as usize).step_by(to as usize))
+                    .map(|(s, k)| f64::from(s) * k)
+                    .sum::<f64>()
+            };
+            output.push(sample as f32);
         }
 
         output.into()

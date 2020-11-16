@@ -87,7 +87,7 @@ impl Resampler for Polyphase {
     }
 
     fn resample(&self, input: &[f32], channels: usize) -> Box<[f32]> {
-        // 0 channels is a nonsensical request and would result in a divion by zero.
+        // 0 channels is a nonsensical request and would result in a division by zero.
         assert!(channels != 0);
 
         // Ensure input.len() is an exact multiple of the channel count.

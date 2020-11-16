@@ -78,14 +78,10 @@ impl Resampler for Polyphase {
         let cutoff = 0.475 / downscale_factor;
         let left_offset = (FILTER_SIZE / 2) * to;
 
-        let kaiser_values = {
-            let value_count = FILTER_SIZE * to;
-            let mut v = Vec::with_capacity(value_count as usize);
-            for i in 0..value_count {
-                v.push(sinc_filter(left_offset, downscale_factor, cutoff, i))
-            }
-            v.into_boxed_slice()
-        };
+        let kaiser_values = (0..(FILTER_SIZE * to))
+            .map(|i| sinc_filter(left_offset, downscale_factor, cutoff, i))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         Self { from, to, left_offset: u64::from(left_offset), kaiser_values }
     }

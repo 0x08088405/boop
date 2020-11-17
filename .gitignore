@@ -6,3 +6,5 @@ Cargo.lock
 /.idea
 /.project
 /.vscode
+
+/src/bin

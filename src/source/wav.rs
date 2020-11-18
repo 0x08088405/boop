@@ -80,6 +80,16 @@ impl WavPlayer {
             sample_getter,
         })
     }
+
+    /// Returns the total number of samples in this wav file
+    pub fn length(&self) -> usize {
+        (self.data_end - self.data_start) / self.sample_bytes
+    }
+
+    /// Returns the sample rate of this wav file (eg. 44100)
+    pub fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
 }
 
 impl Source for WavPlayer {
@@ -90,10 +100,6 @@ impl Source for WavPlayer {
 
     fn channel_count(&self) -> usize {
         self.channels
-    }
-
-    fn sample_rate(&self) -> usize {
-        self.sample_rate
     }
 }
 

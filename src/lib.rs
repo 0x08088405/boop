@@ -24,8 +24,4 @@ impl Source for Player {
     fn channel_count(&self) -> usize {
         self.channels
     }
-
-    fn sample_rate(&self) -> usize {
-        48000 // This function will probably be removed soon and isn't currently used
-    }
 }

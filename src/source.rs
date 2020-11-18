@@ -10,8 +10,4 @@ pub trait Source {
 
     /// Returns the number of channels in this Source object's audio data.
     fn channel_count(&self) -> usize;
-
-    /// Returns the sample rate of this Source object's audio data.
-    /// For example, a value of 44100 indicates that 44100 samples should be played per second.
-    fn sample_rate(&self) -> usize;
 }

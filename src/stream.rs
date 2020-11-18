@@ -39,15 +39,9 @@ impl OutputStream {
 
         let mut supported_configs_range = match device.supported_output_configs() {
             Ok(r) => r,
-            Err(SupportedStreamConfigsError::DeviceNotAvailable) => {
-                return Err(Error::DeviceNotAvailable)
-            }
-            Err(SupportedStreamConfigsError::InvalidArgument) => {
-                return Err(Error::InvalidArgument)
-            }
-            Err(SupportedStreamConfigsError::BackendSpecific { err }) => {
-                return Err(Error::CPALError(err))
-            }
+            Err(SupportedStreamConfigsError::DeviceNotAvailable) => return Err(Error::DeviceNotAvailable),
+            Err(SupportedStreamConfigsError::InvalidArgument) => return Err(Error::InvalidArgument),
+            Err(SupportedStreamConfigsError::BackendSpecific { err }) => return Err(Error::CPALError(err)),
         };
         let supported_config = match supported_configs_range.next() {
             Some(c) => c,
@@ -55,11 +49,10 @@ impl OutputStream {
         }
         .with_max_sample_rate();
 
-        let sources: Arc<Mutex<Vec<ActiveSource>>> =
-            Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
+        let sources: Arc<Mutex<Vec<ActiveSource>>> = Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
         let closure_sources = sources.clone();
 
-        let sample_rate = supported_config.sample_rate().0;
+        let _sample_rate = supported_config.sample_rate().0; // TODO: probably store this or expose it somewhere
         let channel_count: u16 = supported_config.channels();
 
         let write_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -74,68 +67,36 @@ impl OutputStream {
                 // Go through all our sources and mix them into the output buffer
                 // Note: retain() is used here so that we can mix while also removing any
                 // empty generators from the list in one pass.
-                sources.retain_mut(
-                    |ActiveSource {
-                         source,
-                         sample_index,
-                     }| {
-                        let source_channel_count = source.channel_count();
+                sources.retain_mut(|ActiveSource { source, sample_index }| {
+                    let source_channel_count = source.channel_count();
 
-                        // Calculate the actual poin in the source data that we want to interpolate
-                        let source_point = ((source.sample_rate() as f64) / f64::from(sample_rate))
-                            * (*sample_index / source_channel_count) as f64;
-                        let idx_before_source_point = source_point.floor() as usize;
-
-                        // If we're past the end of the audio data, indicate it by returning false
-                        if source
-                            .get_sample((idx_before_source_point + 1) * source_channel_count)
-                            .is_none()
-                        {
-                            return false;
-                        }
-
-                        if source_channel_count == output_channel_count {
-                            // Firstly, if the input and output channel counts are the same, pass straight through.
-                            for (i, out_sample) in output_samples.iter_mut().enumerate() {
-                                let start_sample = source
-                                    .get_sample(
-                                        (idx_before_source_point * source_channel_count) + i,
-                                    )
-                                    .unwrap_or_default();
-                                let end_sample = source
-                                    .get_sample(
-                                        (idx_before_source_point * source_channel_count)
-                                            + source_channel_count
-                                            + i,
-                                    )
-                                    .unwrap_or_default();
-
-                                *out_sample += start_sample
-                                    + ((end_sample - start_sample) * source_point.fract() as f32);
+                    if source_channel_count == output_channel_count {
+                        // Firstly, if the input and output channel counts are the same, pass straight through.
+                        for out_sample in output_samples.iter_mut() {
+                            if let Some(s) = source.get_sample(*sample_index) {
+                                *out_sample += s;
                                 *sample_index += 1;
+                            } else {
+                                return false
                             }
-                        } else if source_channel_count == 1 {
+                        }
+                        true
+                    } else if source_channel_count == 1 {
+                        if let Some(s) = source.get_sample(*sample_index) {
                             // Next, if the input is 1-channel, duplicate the next sample across all output channels.
-                            let start_sample = source
-                                .get_sample(idx_before_source_point)
-                                .unwrap_or_default();
-                            let end_sample = source
-                                .get_sample(idx_before_source_point + 1)
-                                .unwrap_or_default();
-
                             output_samples.iter_mut().for_each(|x| {
-                                *x += start_sample
-                                    + ((end_sample - start_sample) * source_point.fract() as f32)
+                                *x += s;
                             });
                             *sample_index += 1;
+                            true
                         } else {
-                            // Different multi-channel counts. What do we do here!?
-                            todo!("multi-channel mixing")
+                            false
                         }
-
-                        true
-                    },
-                );
+                    } else {
+                        // Different multi-channel counts. What do we do here!?
+                        todo!("multi-channel mixing")
+                    }
+                });
             }
         };
 
@@ -164,19 +125,13 @@ impl OutputStream {
             _ => (),
         }
 
-        Ok(OutputStream {
-            _stream: stream,
-            sources,
-        })
+        Ok(OutputStream { _stream: stream, sources })
     }
 
     /// Adds an audio source to the output stream. The source will be played until it ends.
     pub fn add_source(&self, source: impl Source + Send + Sync + 'static) {
         let sources = &mut *self.sources.lock().unwrap();
-        sources.push(ActiveSource {
-            source: Box::new(source),
-            sample_index: 0,
-        });
+        sources.push(ActiveSource { source: Box::new(source), sample_index: 0 });
     }
 }
 

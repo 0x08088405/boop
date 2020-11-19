@@ -61,7 +61,11 @@ impl Resampler for Polyphase {
                 if k < -1.0 || k > 1.0 {
                     0.0
                 } else {
-                    bessel_i0(18.87726 * (1.0 - k.powi(2)).sqrt()) / 14594424.752156679
+                    // 18.87726 is the Kaiser beta value for a rejection of 180 dB.
+                    // The magic number at the end is bessel_i0(18.87726)
+                    // Since our bessel_i0 is a loose approximation, I've manually raised it a bit to prevent clipping
+                    // It was previously 14594424.752156679
+                    bessel_i0(18.87726 * (1.0 - k.powi(2)).sqrt()) / 14642294.465343751
                 }
             }
 

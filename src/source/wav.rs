@@ -5,7 +5,7 @@ pub struct WavPlayer {
     channels: usize,
     sample_rate: usize,
     sample_bytes: usize,
-    data_start: usize,
+    next_sample_offset: usize,
     data_end: usize,
     sample_getter: fn(&[u8], usize) -> Option<f32>,
 }
@@ -75,15 +75,15 @@ impl WavPlayer {
             channels: channels.into(),
             sample_rate: sample_rate as usize,
             sample_bytes: usize::from(sample_bits / 8),
-            data_start,
+            next_sample_offset: data_start,
             data_end: data_start + data_len,
             sample_getter,
         })
     }
 
-    /// Returns the total number of samples in this wav file
+    /// Returns the total number of samples remaining in this wav file
     pub fn length(&self) -> usize {
-        (self.data_end - self.data_start) / self.sample_bytes
+        (self.data_end - self.next_sample_offset) / self.sample_bytes
     }
 
     /// Returns the sample rate of this wav file (eg. 44100)
@@ -93,9 +93,16 @@ impl WavPlayer {
 }
 
 impl Source for WavPlayer {
-    fn get_sample(&self, index: usize) -> Option<f32> {
-        let offset = index * self.sample_bytes;
-        (self.sample_getter)(&self.file[self.data_start..self.data_end], offset)
+    fn write_samples(&mut self, buffer: &mut [f32]) -> usize {
+        for (i, out) in buffer.iter_mut().enumerate() {
+            if let Some(s) = (self.sample_getter)(&self.file[self.next_sample_offset..self.data_end], 0) {
+                *out = s;
+                self.next_sample_offset += self.sample_bytes;
+            } else {
+                return i
+            }
+        }
+        buffer.len()
     }
 
     fn channel_count(&self) -> usize {

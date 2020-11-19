@@ -12,13 +12,32 @@ pub use stream::OutputStream;
 /// If the samples have a different sample rate than the output stream, the output will sound sped up or slowed down.
 /// Use a resampler (such as boop::resampler::Polyphase, or implement your own) to resample it at the correct rate.
 pub struct Player {
-    pub samples: Box<[f32]>,
-    pub channels: usize,
+    samples: Box<[f32]>,
+    channels: usize,
+    offset: usize,
+}
+
+impl Player {
+    pub fn new(samples: Box<[f32]>, channels: usize) -> Self {
+        Self { samples, channels, offset: 0 }
+    }
 }
 
 impl Source for Player {
-    fn get_sample(&self, index: usize) -> Option<f32> {
-        self.samples.get(index).copied()
+    fn write_samples(&mut self, buffer: &mut [f32]) -> usize {
+        let old_offset = self.offset;
+        self.offset += buffer.len();
+        if let Some(i) = self.samples.get(old_offset..self.offset) {
+            buffer.copy_from_slice(i);
+            buffer.len()
+        } else {
+            if let Some(i) = self.samples.get(old_offset..) {
+                buffer[..i.len()].copy_from_slice(i);
+                i.len()
+            } else {
+                0
+            }
+        }
     }
 
     fn channel_count(&self) -> usize {

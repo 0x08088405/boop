@@ -2,11 +2,9 @@ pub mod wav;
 
 /// An audio source. Anything implementing this trait may be played to an output stream.
 pub trait Source {
-    /// Retrieves the nth sample from the audio data represented by this Source object.
-    /// If the input data has more than one channel, samples for each channel are expected to be interleaved.
-    /// This function should return None if index is out-of-bounds (ie. is past the end of the input data.) However,
-    /// input data may be generated endlessly by a Source object, in which case this function should never return None.
-    fn get_sample(&self, index: usize) -> Option<f32>;
+    /// Writes the next set of samples to an output buffer
+    /// TODO: doc this better
+    fn write_samples(&mut self, buffer: &mut [f32]) -> usize;
 
     /// Returns the number of channels in this Source object's audio data.
     fn channel_count(&self) -> usize;

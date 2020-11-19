@@ -63,41 +63,29 @@ impl OutputStream {
 
             // Iterate slices of output data so that we're writing one sample per channel at a time
             let sources = &mut *closure_sources.lock().unwrap();
-            for output_samples in data.chunks_exact_mut(output_channel_count) {
-                // Go through all our sources and mix them into the output buffer
-                // Note: retain() is used here so that we can mix while also removing any
-                // empty generators from the list in one pass.
-                sources.retain_mut(|ActiveSource { source, sample_index }| {
-                    let source_channel_count = source.channel_count();
 
-                    if source_channel_count == output_channel_count {
-                        // Firstly, if the input and output channel counts are the same, pass straight through.
-                        for out_sample in output_samples.iter_mut() {
-                            if let Some(s) = source.get_sample(*sample_index) {
-                                *out_sample += s;
-                                *sample_index += 1;
-                            } else {
-                                return false
-                            }
-                        }
-                        true
-                    } else if source_channel_count == 1 {
-                        if let Some(s) = source.get_sample(*sample_index) {
-                            // Next, if the input is 1-channel, duplicate the next sample across all output channels.
-                            output_samples.iter_mut().for_each(|x| {
-                                *x += s;
-                            });
-                            *sample_index += 1;
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        // Different multi-channel counts. What do we do here!?
-                        todo!("multi-channel mixing")
+            // Note: retain() is used here so that we can mix while also removing any
+            // empty generators from the list in one pass.
+            sources.retain_mut(|ActiveSource { source, .. }| {
+                let source_channel_count = source.channel_count();
+
+                if source_channel_count == output_channel_count {
+                    // Firstly, if the input and output channel counts are the same, pass straight through.
+                    let samples_written = source.write_samples(data);
+                    samples_written == data.len()
+                } else if source_channel_count == 1 {
+                    // Next, if the input is 1-channel, duplicate the next sample across all output channels.
+                    let samples_needed = data.len() / output_channel_count;
+                    let samples_written = source.write_samples(&mut data[..samples_needed]);
+                    for i in (0..data.len()).rev() {
+                        data[i] = data[i / output_channel_count];
                     }
-                });
-            }
+                    samples_needed == samples_written
+                } else {
+                    // Different multi-channel counts. What do we do here!?
+                    todo!("multi-channel mixing")
+                }
+            });
         };
 
         let write_i16 = move |_data: &mut [i16], _: &cpal::OutputCallbackInfo| todo!("write_i16");

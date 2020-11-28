@@ -1,8 +1,5 @@
 use crate::Source;
 
-/// Filter size used by the polyphase resampler - change this for quality/performance tradeoff
-const FILTER_SIZE: u32 = 60;
-
 /// Implementation of a PQF resampler. Construct with: Resampler::new(source, source_rate, dest_rate)
 /// Once constructed, it will behave as a Source object which outputs samples at the target sample rate.
 pub struct Resampler<S>
@@ -12,7 +9,7 @@ where
     source: S,
     from: u32,
     to: u32,
-    left_offset: u64,
+    left_offset: usize,
     kaiser_values: Box<[f64]>,
     filter_1: Box<[f32]>,
     filter_2: Box<[f32]>,
@@ -83,9 +80,7 @@ impl<S: Source> Resampler<S> {
                 } else {
                     // 18.87726 is the Kaiser beta value for a rejection of 180 dB.
                     // The magic number at the end is bessel_i0(18.87726)
-                    // Since our bessel_i0 is a loose approximation, I've manually raised it a bit to prevent clipping
-                    // It was previously 14594424.752156679
-                    bessel_i0(18.87726 * (1.0 - k.powi(2)).sqrt()) / 14642294.465343751
+                    bessel_i0(18.87726 * (1.0 - k.powi(2)).sqrt()) / 14594424.752156679
                 }
             }
 
@@ -94,20 +89,30 @@ impl<S: Source> Resampler<S> {
             kaiser(x / left) * 2.0 * gain * cutoff * sinc(2.0 * cutoff * x)
         }
 
+        #[inline]
+        fn kaiser_order(transition_width: f64) -> usize {
+            // Calculate kaiser order for given transition width and a rejection of 180 dB.
+            // Kaiser's original formula for this is: (rejection - 7.95) / (2.285 * 2 * pi * width)
+            (37.6477024 / (std::f64::consts::PI * transition_width)).ceil() as usize
+        }
+
         let gcd = gcd(source_rate, dest_rate);
         let from = source_rate / gcd;
         let to = dest_rate / gcd;
 
-        let downscale_factor = f64::from(to);
+        let downscale_factor = f64::from(to.max(from));
         let cutoff = 0.475 / downscale_factor;
-        let left_offset = (FILTER_SIZE / 2) * to;
+        let transition_width = 0.05 / downscale_factor;
 
-        let kaiser_values = (0..(FILTER_SIZE * to))
-            .map(|i| sinc_filter(left_offset, downscale_factor, cutoff, i))
+        let kaiser_value_count = kaiser_order(transition_width) + 1;
+        let left_offset = kaiser_value_count / 2;
+
+        let kaiser_values = (0..kaiser_value_count)
+            .map(|i| sinc_filter(left_offset as _, downscale_factor, cutoff, i as _))
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        let filter_samples = FILTER_SIZE as usize * source.channel_count();
+        let filter_samples = ((kaiser_value_count + to as usize) / to as usize) * source.channel_count();
         let mut filter_1 = Vec::with_capacity(filter_samples);
         let mut filter_2 = Vec::with_capacity(filter_samples);
 
@@ -130,7 +135,7 @@ impl<S: Source> Resampler<S> {
             source,
             from,
             to,
-            left_offset: u64::from(left_offset),
+            left_offset,
             kaiser_values,
             filter_1: filter_1.into_boxed_slice(),
             filter_2: filter_2.into_boxed_slice(),
@@ -158,7 +163,7 @@ impl<S: Source> Source for Resampler<S> {
             // We first calculate an upscaled sample index ("start"), then take both its division and modulo
             // with our target sample rate. The int-division gives us a sample index in input data, and
             // the modulo gives us our kaiser offset.
-            let start = self.left_offset + (from * (self.output_count as u64 / channels as u64));
+            let start = (self.left_offset + (from as usize * (self.output_count / channels))) as u64;
             let kaiser_index = start % to;
             let input_index = start / to;
 
@@ -199,7 +204,7 @@ impl<S: Source> Source for Resampler<S> {
                 .rev()
                 .chain(self.filter_1.iter().rev())
                 .copied()
-                .skip(self.filter_1.len() * 2 - sample_index as usize - 1)
+                .skip(self.whole_filter_size - sample_index as usize - 1)
                 .step_by(channels)
                 .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
                 .map(|(s, k)| f64::from(s) * k)

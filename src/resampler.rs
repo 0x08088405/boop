@@ -198,17 +198,42 @@ impl<S: Source> Source for Resampler<S> {
             }
 
             // Multiply this set of input data by the relevant set of kaiser values and add them all together
-            *s = self
-                .filter_2
-                .iter()
-                .rev()
-                .chain(self.filter_1.iter().rev())
-                .copied()
-                .skip(self.whole_filter_size - sample_index as usize - 1)
-                .step_by(channels)
-                .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
-                .map(|(s, k)| f64::from(s) * k)
-                .sum::<f64>() as f32;
+            if let Some(samples) = self.filter_1.get(..=sample_index as usize) {
+                // The start is in filter_1, and therefore everything we need is in filter_1,
+                // because we iter backwards from sample_index
+                *s = samples
+                    .iter()
+                    .rev()
+                    .step_by(channels)
+                    .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
+                    .map(|(s, k)| f64::from(*s) * k)
+                    .sum::<f64>() as f32;
+            } else {
+                // The start is in filter_2
+                let offset = sample_index as usize - self.buffer_size;
+                if let Some(samples) = self.filter_2.get(..=offset) {
+                    // We might need some data from filter_1 as well
+                    let iter = samples.iter().rev().step_by(channels);
+                    let skip = iter.len();
+                    *s = (iter
+                        .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize))
+                        .map(|(s, k)| f64::from(*s) * k)
+                        .sum::<f64>()
+                        + self
+                            .filter_1
+                            .iter()
+                            .rev()
+                            .skip(channels - channel - 1)
+                            .step_by(channels)
+                            .zip(self.kaiser_values.iter().skip(kaiser_index as usize).step_by(to as usize).skip(skip))
+                            .map(|(s, k)| f64::from(*s) * k)
+                            .sum::<f64>()) as f32;
+                } else {
+                    // The window has passed the end of filter_2, so everything we need is in filter_2
+                    // TODO: this is unreachable because of the early return. Should we handle this?
+                    unreachable!()
+                }
+            }
 
             self.output_count += 1;
         }

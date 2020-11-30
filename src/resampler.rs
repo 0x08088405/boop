@@ -78,9 +78,9 @@ impl<S: Source> Resampler<S> {
                 if k < -1.0 || k > 1.0 {
                     0.0
                 } else {
-                    // 18.87726 is the Kaiser beta value for a rejection of 180 dB.
-                    // The magic number at the end is bessel_i0(18.87726)
-                    bessel_i0(18.87726 * (1.0 - k.powi(2)).sqrt()) / 14594424.752156679
+                    // 6.20426 is the Kaiser beta value for a rejection of 65 dB.
+                    // The magic number at the end is bessel_i0(6.20426)
+                    bessel_i0(6.20426 * (1.0 - k.powi(2)).sqrt()) / 81.0332923199
                 }
             }
 
@@ -91,9 +91,9 @@ impl<S: Source> Resampler<S> {
 
         #[inline]
         fn kaiser_order(transition_width: f64) -> usize {
-            // Calculate kaiser order for given transition width and a rejection of 180 dB.
+            // Calculate kaiser order for given transition width and a rejection of 65 dB.
             // Kaiser's original formula for this is: (rejection - 7.95) / (2.285 * 2 * pi * width)
-            (37.6477024 / (std::f64::consts::PI * transition_width)).ceil() as usize
+            ((65.0 - 7.95) / (2.285 * 2.0 * std::f64::consts::PI * transition_width)).ceil() as usize
         }
 
         let gcd = gcd(source_rate, dest_rate);

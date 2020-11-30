@@ -53,23 +53,19 @@ impl<S: Source> Resampler<S> {
 
             #[inline]
             fn bessel_i0(x: f64) -> f64 {
-                // Just trust me on this one
-                let ax = x.abs();
-                if ax < 3.75 {
-                    let y = (x / 3.75).powi(2);
-                    1.0 + y
-                        * (3.5156229
-                            + y * (3.0899424 + y * (1.2067492 + y * (0.2659732 + y * (0.360768e-1 + y * 0.45813e-2)))))
-                } else {
-                    let y = 3.75 / ax;
-                    (ax.exp() / ax.sqrt())
-                        * (0.39894228
-                            + y * (0.1328592e-1
-                                + y * (0.225319e-2
-                                    + y * (-0.157565e-2
-                                        + y * (0.916281e-2
-                                            + y * (-0.2057706e-1
-                                                + y * (0.2635537e-1 + y * (-0.1647633e-1 + y * 0.392377e-2))))))))
+                // Modified Bessel function I0(x) is a sum(k) to inifity of:
+                // (x²/4)^k / (k!)²
+                let x2_4 = x.powi(2) / 4.0;
+                let mut sum = 1.0;
+                let mut k = 1u32;
+                let mut k_factorial_square = 1u32;
+                loop {
+                    sum += x2_4.powi(k as i32) / f64::from(k_factorial_square);
+                    k += 1;
+                    k_factorial_square = match k_factorial_square.checked_mul(k.pow(2)) {
+                        Some(i) => i,
+                        None => break sum,
+                    }
                 }
             }
 

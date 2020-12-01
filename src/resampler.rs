@@ -57,10 +57,10 @@ impl<S: Source> Resampler<S> {
                 // (x²/4)^k / (k!)²
                 let x2_4 = x.powi(2) / 4.0;
                 let mut sum = 1.0;
-                let mut k = 1u32;
-                let mut k_factorial_square = 1u32;
+                let mut k = 1u64;
+                let mut k_factorial_square = 1u64;
                 loop {
-                    sum += x2_4.powi(k as i32) / f64::from(k_factorial_square);
+                    sum += x2_4.powi(k as i32) / k_factorial_square as f64;
                     k += 1;
                     k_factorial_square = match k_factorial_square.checked_mul(k.pow(2)) {
                         Some(i) => i,

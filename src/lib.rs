@@ -1,9 +1,11 @@
 mod error;
+mod mixer;
 pub mod resampler;
 pub mod source;
 mod stream;
 
 pub use error::Error;
+pub use mixer::Mixer;
 pub use resampler::Resampler;
 pub use source::Source;
 pub use stream::OutputStream;

@@ -1,34 +1,19 @@
-use crate::{Error, Source};
+use crate::{Error, Mixer, Source};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     BuildStreamError, PlayStreamError, SampleFormat, SupportedStreamConfigsError,
 };
 use std::sync::{Arc, Mutex};
 
-// Initial capacity for the Vec of audio sources in an OutputStream
-const SOURCES_INIT_CAPACITY: usize = 8;
-
-/// A source that is currently being played from.
-/// Stores a Source object and metadata about how much of it has already been played.
-struct ActiveSource {
-    /// Source object being played from.
-    pub source: Box<dyn Source + Send + Sync>,
-
-    /// The number of samples that have been played so far.
-    /// Note: this is the number of samples played at OUTPUT sample rate, ie. the sample rate of the OutputStream which
-    /// owns this object, NOT the sample rate of the Source. This is to make resampling easier.
-    pub sample_index: usize,
-}
-
 /// An audio output stream which plays audio sources. Capable of mixing multiple sources at once.
 pub struct OutputStream {
     _stream: cpal::Stream,
-    sources: Arc<Mutex<Vec<ActiveSource>>>,
+    source: Arc<Mutex<Mixer>>,
 }
 
 impl OutputStream {
     // Sets up and returns an OutputStream
-    pub fn new() -> Result<OutputStream, Error> {
+    pub fn new() -> Result<Self, Error> {
         let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
         let host = cpal::default_host();
@@ -49,43 +34,14 @@ impl OutputStream {
         }
         .with_max_sample_rate();
 
-        let sources: Arc<Mutex<Vec<ActiveSource>>> = Arc::new(Mutex::new(Vec::with_capacity(SOURCES_INIT_CAPACITY)));
-        let closure_sources = sources.clone();
-
         let _sample_rate = supported_config.sample_rate().0; // TODO: probably store this or expose it somewhere
         let channel_count: u16 = supported_config.channels();
 
+        let source: Arc<Mutex<Mixer>> = Arc::new(Mutex::new(Mixer::new(channel_count.into())));
+        let closure_source = source.clone();
+
         let write_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let output_channel_count = usize::from(channel_count);
-
-            // Zero all the output samples
-            data.iter_mut().for_each(|x| *x = 0.0);
-
-            // Iterate slices of output data so that we're writing one sample per channel at a time
-            let sources = &mut *closure_sources.lock().unwrap();
-
-            // Note: retain() is used here so that we can mix while also removing any
-            // empty generators from the list in one pass.
-            sources.retain_mut(|ActiveSource { source, .. }| {
-                let source_channel_count = source.channel_count();
-
-                if source_channel_count == output_channel_count {
-                    // Firstly, if the input and output channel counts are the same, pass straight through.
-                    let samples_written = source.write_samples(data);
-                    samples_written == data.len()
-                } else if source_channel_count == 1 {
-                    // Next, if the input is 1-channel, duplicate the next sample across all output channels.
-                    let samples_needed = data.len() / output_channel_count;
-                    let samples_written = source.write_samples(&mut data[..samples_needed]);
-                    for i in (0..data.len()).rev() {
-                        data[i] = data[i / output_channel_count];
-                    }
-                    samples_needed == samples_written
-                } else {
-                    // Different multi-channel counts. What do we do here!?
-                    todo!("multi-channel mixing")
-                }
-            });
+            closure_source.lock().unwrap().write_samples(data);
         };
 
         let write_i16 = move |_data: &mut [i16], _: &cpal::OutputCallbackInfo| todo!("write_i16");
@@ -113,13 +69,12 @@ impl OutputStream {
             _ => (),
         }
 
-        Ok(OutputStream { _stream: stream, sources })
+        Ok(OutputStream { _stream: stream, source })
     }
 
     /// Adds an audio source to the output stream. The source will be played until it ends.
     pub fn add_source(&self, source: impl Source + Send + Sync + 'static) {
-        let sources = &mut *self.sources.lock().unwrap();
-        sources.push(ActiveSource { source: Box::new(source), sample_index: 0 });
+        self.source.lock().unwrap().add_source(source);
     }
 }
 

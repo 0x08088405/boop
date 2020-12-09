@@ -1,5 +1,5 @@
 mod error;
-mod mixer;
+pub mod mixer;
 pub mod resampler;
 pub mod source;
 mod stream;

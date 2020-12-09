@@ -2,31 +2,38 @@ use crate::Source;
 
 const INIT_CAPACITY: usize = 16;
 
-/// A simple additive mixer. Mixes any number of input streams into one output stream.
-/// Designed to be attached to an output device and left there for the entire lifetime of the application.
-/// This struct will also convert the number of input channels on each input to the expected number of output channels.
-/// However, it does not care what the input or output sample rates are, so you should ensure that all of the Sources
+/// The Mixer trait defines objects which mix any number of input streams into a single output stream.
+/// Mixers are designed to be attached to an output device and left there for the entire lifetime of the application.
+/// They will also convert the number of input channels on each input to the expected number of output channels.
+/// However, Mixers do not care what the input or output sample rates are, so you should ensure that all of the Sources
 /// you send it have the same sample rate. You can change a Source's sample rate with boop::Resampler.
-pub struct Mixer {
+pub trait Mixer {
+    /// Adds a new source to be mixed into this Mixer's output.
+    /// The Mixer will play from this Source until it is exhausted, then discard it.
+    fn add_source(&mut self, source: impl Source + Send + Sync + 'static);
+}
+
+/// A simple additive mixer. Implements the Mixer trait. See the Mixer trait description for more information.
+pub struct BufferedMixer {
     channels: usize,
     sources: Vec<Box<dyn Source + Send + Sync>>,
     input_buffer: Vec<f32>,
 }
 
-impl Mixer {
+impl BufferedMixer {
     /// Constructs a new Mixer. `channels` is the number of channels wanted in the output data.
     pub fn new(channels: usize) -> Self {
         Self { channels, sources: Vec::with_capacity(INIT_CAPACITY), input_buffer: Vec::new() }
     }
+}
 
-    /// Adds a new source to be mixed into this Mixer's output.
-    /// The Mixer will play from this Source until it is exhausted, then discard it.
-    pub fn add_source(&mut self, source: impl Source + Send + Sync + 'static) {
+impl Mixer for BufferedMixer {
+    fn add_source(&mut self, source: impl Source + Send + Sync + 'static) {
         self.sources.push(Box::new(source));
     }
 }
 
-impl Source for Mixer {
+impl Source for BufferedMixer {
     fn write_samples(&mut self, buffer: &mut [f32]) -> usize {
         let input_buffer = &mut self.input_buffer;
         let output_channel_count = self.channels;

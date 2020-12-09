@@ -5,15 +5,28 @@ use cpal::{
 };
 use std::sync::{Arc, Mutex};
 
-/// An audio output stream which plays audio sources. Capable of mixing multiple sources at once.
-pub struct OutputStream {
+/// An audio output stream which plays audio sources. Must be used with a Mixer + Source object.
+/// This object will be queried for samples to be played directly to the output device.
+pub struct OutputStream<M>
+where
+    M: Mixer + Source + Send + Sync + 'static,
+{
     _stream: cpal::Stream,
-    source: Arc<Mutex<Mixer>>,
+    source: Arc<Mutex<M>>,
+    pub sample_rate: u32,
+    pub channel_count: u16,
 }
 
-impl OutputStream {
-    // Sets up and returns an OutputStream
-    pub fn new() -> Result<Self, Error> {
+impl<M> OutputStream<M>
+where
+    M: Mixer + Source + Send + Sync + 'static,
+{
+    /// Sets up and returns an OutputStream. Takes a closure which sets up a Mixer.
+    /// The Mixer must also be a Source, and must be thread-safe (Send + Sync)
+    pub fn with<F>(mut mixer_setup: F) -> Result<Self, Error>
+    where
+        F: FnMut(u16) -> M,
+    {
         let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
 
         let host = cpal::default_host();
@@ -34,10 +47,10 @@ impl OutputStream {
         }
         .with_max_sample_rate();
 
-        let _sample_rate = supported_config.sample_rate().0; // TODO: probably store this or expose it somewhere
+        let sample_rate = supported_config.sample_rate().0;
         let channel_count: u16 = supported_config.channels();
 
-        let source: Arc<Mutex<Mixer>> = Arc::new(Mutex::new(Mixer::new(channel_count.into())));
+        let source: Arc<Mutex<M>> = Arc::new(Mutex::new(mixer_setup(channel_count)));
         let closure_source = source.clone();
 
         let write_f32 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -69,7 +82,7 @@ impl OutputStream {
             _ => (),
         }
 
-        Ok(OutputStream { _stream: stream, source })
+        Ok(OutputStream { _stream: stream, source, sample_rate, channel_count })
     }
 
     /// Adds an audio source to the output stream. The source will be played until it ends.

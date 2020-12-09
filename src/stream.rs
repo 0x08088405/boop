@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 /// This object will be queried for samples to be played directly to the output device.
 pub struct OutputStream<M>
 where
-    M: Mixer + Source + Send + Sync + 'static,
+    M: Mixer + Send + Sync + 'static,
 {
     _stream: cpal::Stream,
     source: Arc<Mutex<M>>,
@@ -19,7 +19,7 @@ where
 
 impl<M> OutputStream<M>
 where
-    M: Mixer + Source + Send + Sync + 'static,
+    M: Mixer + Send + Sync + 'static,
 {
     /// Sets up and returns an OutputStream. Takes a closure which sets up a Mixer.
     /// The Mixer must also be a Source, and must be thread-safe (Send + Sync)

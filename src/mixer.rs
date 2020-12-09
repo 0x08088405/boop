@@ -7,7 +7,7 @@ const INIT_CAPACITY: usize = 16;
 /// They will also convert the number of input channels on each input to the expected number of output channels.
 /// However, Mixers do not care what the input or output sample rates are, so you should ensure that all of the Sources
 /// you send it have the same sample rate. You can change a Source's sample rate with boop::Resampler.
-pub trait Mixer {
+pub trait Mixer: Source {
     /// Adds a new source to be mixed into this Mixer's output.
     /// The Mixer will play from this Source until it is exhausted, then discard it.
     fn add_source(&mut self, source: impl Source + Send + Sync + 'static);
